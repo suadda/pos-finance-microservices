@@ -1,0 +1,17 @@
+# env overrides (the committed .env.example files are the documented defaults)
+.env
+services/*/.env
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+
+# go
+*.test
+*.out
+/bin/
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
