@@ -1,0 +1,7 @@
+vendor
+.env
+tests
+phpunit.xml
+.phpunit.cache
+storage/logs/*
+bootstrap/cache/*.php

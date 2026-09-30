@@ -1,0 +1,72 @@
+# API Gateway: single entry point for the SPA and the three backend services.
+#   /api/auth/*    -> auth-service    /auth/*
+#   /api/pos/*     -> pos-service     /*
+#   /api/finance/* -> finance-service /*
+#   /*             -> frontend (static SPA)
+# /internal/* endpoints are service-to-service only and are NOT reachable through the gateway.
+#
+# Rendered by the nginx image entrypoint (envsubst). ${NGINX_LOCAL_RESOLVERS} is the container's DNS
+# server (NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1). Upstreams are held in variables so they are re-resolved
+# at runtime: a service can be stopped/restarted (new IP) without restarting the gateway (scenario S2).
+
+server {
+    listen 80;
+    server_name _;
+
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+    resolver_timeout 3s;
+
+    set $auth_service    http://auth-service:8000;
+    set $pos_service     http://pos-service:8000;
+    set $finance_service http://finance-service:8000;
+    set $frontend        http://frontend:80;
+
+    client_max_body_size 1m;
+    merge_slashes on; # "//internal" is normalised before matching
+
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Service-Key     ""; # never forward a client-supplied service key
+    proxy_connect_timeout 5s;
+    proxy_read_timeout    30s;
+
+    # Block internal endpoints for every service (matched on the normalised, decoded URI).
+    location ~* ^/api/[^/]+/(auth/)?internal(/|$) {
+        default_type application/json;
+        return 404 '{"error":{"code":"NOT_FOUND","message":"Endpoint tidak ditemukan"}}';
+    }
+
+    location /api/auth/ {
+        rewrite ^/api/(auth/.*)$ /$1 break;
+        proxy_pass $auth_service;
+    }
+
+    location /api/pos/ {
+        rewrite ^/api/pos/(.*)$ /$1 break;
+        proxy_pass $pos_service;
+    }
+
+    location /api/finance/ {
+        rewrite ^/api/finance/(.*)$ /$1 break;
+        proxy_pass $finance_service;
+    }
+
+    # Unavailable upstream -> JSON error the SPA can display.
+    error_page 502 503 504 = @unavailable;
+    location @unavailable {
+        default_type application/json;
+        return 503 '{"error":{"code":"SERVICE_UNAVAILABLE","message":"Layanan sedang tidak tersedia, coba lagi sebentar lagi"}}';
+    }
+
+    location = /health {
+        default_type application/json;
+        return 200 '{"status":"ok"}';
+    }
+
+    location / {
+        proxy_pass $frontend;
+    }
+}
