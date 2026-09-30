@@ -1,0 +1,141 @@
+# Whole stack with one command:  docker compose up -d --build
+#   http://localhost:8080          SPA + API gateway (/api/auth, /api/pos, /api/finance)
+#   http://localhost:8001/8002/8003 direct service ports (for testing /internal/* with X-Service-Key)
+
+x-service-env: &service-env
+  APP_ENV: production
+  APP_DEBUG: "false"
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: info
+  CACHE_STORE: file
+  DB_CONNECTION: mysql
+  DB_PORT: "3306"
+  SERVICE_HTTP_TIMEOUT: "3"
+  AUTH_SERVICE_URL: http://auth-service:8000
+  POS_SERVICE_URL: http://pos-service:8000
+  FINANCE_SERVICE_URL: http://finance-service:8000
+  INTERNAL_API_KEY: ${INTERNAL_API_KEY:-change-me-internal-service-key}
+
+x-mysql: &mysql
+  image: mysql:8.4
+  restart: unless-stopped
+  command: ["--default-time-zone=+07:00", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  healthcheck:
+    test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+    interval: 5s
+    timeout: 5s
+    retries: 30
+    start_period: 20s
+
+services:
+  # ---------- databases (one isolated MySQL per service) ----------
+  db_auth:
+    <<: *mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_auth
+      MYSQL_DATABASE: db_auth
+      MYSQL_USER: auth
+      MYSQL_PASSWORD: auth_secret
+    volumes: [db_auth:/var/lib/mysql]
+
+  db_pos:
+    <<: *mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pos
+      MYSQL_DATABASE: db_pos
+      MYSQL_USER: pos
+      MYSQL_PASSWORD: pos_secret
+    volumes: [db_pos:/var/lib/mysql]
+
+  db_finance:
+    <<: *mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_finance
+      MYSQL_DATABASE: db_finance
+      MYSQL_USER: finance
+      MYSQL_PASSWORD: finance_secret
+    volumes: [db_finance:/var/lib/mysql]
+
+  # ---------- backend services (Laravel 13 on FrankenPHP) ----------
+  auth-service:
+    build: ./services/auth
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      APP_NAME: auth-service
+      APP_KEY: base64:0p3WnQn2cS1C2tA0XxVb7mS0p9q5r3aYdH3nq6oQJtU=
+      DB_HOST: db_auth
+      DB_DATABASE: db_auth
+      DB_USERNAME: auth
+      DB_PASSWORD: auth_secret
+      JWT_SECRET: ${JWT_SECRET:-change-me-auth-service-jwt-secret-please-32+}
+      JWT_ACCESS_TTL: "900"
+      JWT_REFRESH_TTL: "604800"
+    depends_on:
+      db_auth: { condition: service_healthy }
+    ports: ["8001:8000"]
+    healthcheck: &http-health
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  pos-service:
+    build: ./services/pos
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      APP_NAME: pos-service
+      APP_KEY: base64:mZ8m0mN7f9yD0q4B3cK6vT1rW2eX5uA8sJ9hG3lP0oQ=
+      DB_HOST: db_pos
+      DB_DATABASE: db_pos
+      DB_USERNAME: pos
+      DB_PASSWORD: pos_secret
+      TAX_RATE: ${TAX_RATE:-0.11}
+    depends_on:
+      db_pos: { condition: service_healthy }
+      auth-service: { condition: service_healthy }
+    ports: ["8002:8000"]
+    healthcheck: *http-health
+
+  finance-service:
+    build: ./services/finance
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      APP_NAME: finance-service
+      APP_KEY: base64:Qf3r8Jm1tZ4kV7nB2xC5yH0wL9pS6dE3aG8uK1oN4iM=
+      DB_HOST: db_finance
+      DB_DATABASE: db_finance
+      DB_USERNAME: finance
+      DB_PASSWORD: finance_secret
+    depends_on:
+      db_finance: { condition: service_healthy }
+      auth-service: { condition: service_healthy }
+    ports: ["8003:8000"]
+    healthcheck: *http-health
+
+  # ---------- frontend + gateway ----------
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    environment:
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1" # template gets the container DNS server (runtime re-resolution)
+    volumes:
+      - ./gateway/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      - auth-service
+      - pos-service
+      - finance-service
+      - frontend
+    ports: ["${GATEWAY_PORT:-8080}:80"]
+
+volumes:
+  db_auth:
+  db_pos:
+  db_finance:

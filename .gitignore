@@ -2,14 +2,14 @@
 .env
 services/*/.env
 
+# php
+services/*/vendor/
+services/*/.phpunit.cache/
+services/*/.phpunit.result.cache
+
 # frontend
 frontend/node_modules/
 frontend/dist/
-
-# go
-*.test
-*.out
-/bin/
 
 # editors / OS
 .idea/
